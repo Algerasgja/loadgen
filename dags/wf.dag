@@ -1,0 +1,8 @@
+workflow wf
+start A
+
+edge A -> B,C
+edge B -> D
+edge C -> D
+
+prob A B=0.2 C=0.8

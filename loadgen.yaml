@@ -1,0 +1,15 @@
+dag_dir: "dags"
+
+workload:
+  target_rps: 5.0
+  total_runs: 10
+  max_concurrency: 2
+  stddev_ratio: 0.1
+
+openwhisk:
+  wsk_path: ""
+  poll_interval_ms: 50
+  poll_batch_size: 64
+  demo_dir: "python_demo"
+  action_kind: "python:3"
+  auto_create_actions: 1
