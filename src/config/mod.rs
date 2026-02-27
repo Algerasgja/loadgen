@@ -3,6 +3,7 @@ pub struct Config {
     pub dag_dir: String,
     pub workload: WorkloadConfig,
     pub openwhisk: OpenWhiskConfig,
+    pub cap_warm: CapWarmConfig,
 }
 
 impl Default for Config {
@@ -11,6 +12,7 @@ impl Default for Config {
             dag_dir: "dags".to_string(),
             workload: WorkloadConfig::default(),
             openwhisk: OpenWhiskConfig::default(),
+            cap_warm: CapWarmConfig::default(),
         }
     }
 }
@@ -53,6 +55,19 @@ impl Default for OpenWhiskConfig {
             demo_dir: "python_demo".to_string(),
             action_kind: "python:3".to_string(),
             auto_create_actions: 1,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CapWarmConfig {
+    pub url: String,
+}
+
+impl Default for CapWarmConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
         }
     }
 }
@@ -111,6 +126,10 @@ fn parse_yaml_minimal(input: &str) -> Result<Config, String> {
                 "action_kind" => cfg.openwhisk.action_kind = parse_string(value),
                 "auto_create_actions" => cfg.openwhisk.auto_create_actions = parse_usize(value, line_no)?,
                 _ => return Err(format!("line {}: unknown openwhisk key {}", line_no, key)),
+            },
+            Some("cap_warm") => match key {
+                "url" => cfg.cap_warm.url = parse_string(value),
+                _ => return Err(format!("line {}: unknown cap_warm key {}", line_no, key)),
             },
             Some(other) => return Err(format!("line {}: unknown section {}", line_no, other)),
         }

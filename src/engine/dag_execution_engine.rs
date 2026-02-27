@@ -52,6 +52,7 @@ impl<'a> DagExecutionEngine<'a> {
             req.request_id.clone(),
             max_hops,
             branch_probs,
+            req.start_time,
         );
         self.run_manager.create_run(state);
         self.pending_starts.push_back(req);
@@ -149,6 +150,7 @@ impl<'a> DagExecutionEngine<'a> {
             end_ts,
             exec_duration,
             cold_start_duration,
+            transition_time: 0, // Not available here, sent by RunManager
             timestamp: now_millis(),
         });
 
@@ -162,7 +164,7 @@ impl<'a> DagExecutionEngine<'a> {
                 end_ts,
                 exec_duration,
                 cold_start_duration,
-            }, children.len());
+            }, children.len(), self.notifier);
 
         let (run_id, prefix_after) = match outcome {
             RunStepOutcome::Continue { run_id, prefix, .. } => (run_id, prefix),

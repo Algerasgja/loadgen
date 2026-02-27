@@ -14,6 +14,7 @@ pub struct RunState {
     pub branch_probabilities: HashMap<FuncId, Vec<(FuncId, f64)>>,
     pub inflight_activations: HashMap<String, InflightActivation>,
     pub status: RunStatus,
+    pub last_end_ts: u64,
 }
 
 impl RunState {
@@ -23,6 +24,7 @@ impl RunState {
         request_id: RequestId,
         max_hops: usize,
         branch_probabilities: HashMap<FuncId, Vec<(FuncId, f64)>>,
+        start_time: u64,
     ) -> Self {
         Self {
             workflow_id,
@@ -35,6 +37,7 @@ impl RunState {
             branch_probabilities,
             inflight_activations: HashMap::new(),
             status: RunStatus::Running,
+            last_end_ts: start_time,
         }
     }
 
@@ -52,13 +55,17 @@ impl RunState {
         );
     }
 
-    pub fn on_completed(&mut self, activation_id: &str) -> Option<FuncId> {
+    pub fn on_completed(&mut self, activation_id: &str, current_end_ts: u64) -> Option<(FuncId, u64)> {
         let inflight = self.inflight_activations.remove(activation_id)?;
         let func = inflight.func;
-        self.prefix.push(func);
+        
+        let prev_end_ts = self.last_end_ts;
+        self.last_end_ts = current_end_ts;
+
+        self.prefix.push(func.clone());
         self.hop_index = self.hop_index.saturating_add(1);
         self.current_func = None;
-        Some(self.prefix.last().cloned().unwrap())
+        Some((func, prev_end_ts))
     }
 
     pub fn set_current(&mut self, func: FuncId) {

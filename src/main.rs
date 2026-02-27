@@ -2,7 +2,7 @@ fn main() {
     use loadgen::config::Config;
     use loadgen::dag::loader::load_from_dir;
     use loadgen::engine::dag_execution_engine::DagExecutionEngine;
-    use loadgen::interactions::capwarm_notifier::NoopNotifier;
+    use loadgen::interactions::capwarm_notifier::{CapWarmNotifier, HttpCapWarmNotifier, NoopNotifier};
     use loadgen::interactions::openwhisk_actions::OpenWhiskActionProvisioner;
     use loadgen::interactions::openwhisk_client::{
         ActivationRecord, MockOpenWhiskClient, OpenWhiskCliClient, OpenWhiskClient,
@@ -14,13 +14,21 @@ fn main() {
 
     let cfg_path = std::env::var("LOADGEN_CONFIG").unwrap_or_else(|_| "loadgen.yaml".to_string());
     let cfg = Config::from_yaml_file(std::path::Path::new(&cfg_path)).expect("load config failed");
+    // println!("Loaded config: {:?}", cfg);
+
+
 
     let mean_interval_ms = (1000.0 / cfg.workload.target_rps.max(0.001)).max(1.0);
     let stddev_ms = (mean_interval_ms * cfg.workload.stddev_ratio).max(1.0);
 
     let (repo, workflow_id) = load_from_dir(std::path::Path::new(&cfg.dag_dir))
         .expect("load DAGs failed");
-    let notifier = NoopNotifier::default();
+    
+    let notifier: Box<dyn CapWarmNotifier> = if !cfg.cap_warm.url.is_empty() {
+        Box::new(HttpCapWarmNotifier::new(cfg.cap_warm.url.clone()))
+    } else {
+        Box::new(NoopNotifier::default())
+    };
 
     let ow: Box<dyn OpenWhiskClient> = if !cfg.openwhisk.wsk_path.is_empty() {
         if cfg.openwhisk.auto_create_actions != 0 {
@@ -73,7 +81,7 @@ fn main() {
     let mut engine = DagExecutionEngine::new(
         &repo,
         ow.as_ref(),
-        &notifier,
+        notifier.as_ref(),
         cfg.workload.max_concurrency,
         7,
     );

@@ -25,10 +25,15 @@ impl OpenWhiskActionProvisioner {
             if self.action_exists(&f.0) {
                 continue;
             }
-            let file = demo_dir.join(format!("{}.py", f.0));
-            if !file.exists() {
-                return Err(format!("missing demo file {:?}", file));
-            }
+            let file_py = demo_dir.join(format!("{}.py", f.0));
+            let file_js = demo_dir.join(format!("{}.js", f.0));
+            let file = if file_py.exists() {
+                file_py
+            } else if file_js.exists() {
+                file_js
+            } else {
+                return Err(format!("missing demo file for {} in {:?}", f.0, demo_dir));
+            };
             self.create_action(&f.0, &file)?;
         }
         Ok(funcs)
@@ -44,6 +49,7 @@ impl OpenWhiskActionProvisioner {
     }
 
     fn create_action(&self, name: &str, file: &Path) -> Result<(), String> {
+        // println!("Creating action {} with kind {} from {:?}", name, self.kind, file);
         let args = vec![
             "action".to_string(),
             "create".to_string(),

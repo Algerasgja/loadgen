@@ -68,19 +68,18 @@ impl OpenWhiskCliClient {
         }
     }
 
-    fn run_wsk(&self, args: &[String]) -> String {
+    fn run_wsk(&self, args: &[String]) -> Result<String, (i32, String)> {
         let out = std::process::Command::new(&self.wsk_path)
             .args(args)
             .output()
             .expect("wsk command failed");
         if !out.status.success() {
-            panic!(
-                "wsk exit {}: {}",
+            return Err((
                 out.status.code().unwrap_or(-1),
-                String::from_utf8_lossy(&out.stderr)
-            );
+                String::from_utf8_lossy(&out.stderr).to_string(),
+            ));
         }
-        String::from_utf8_lossy(&out.stdout).to_string()
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
     fn parse_activation_id_from_invoke(output: &str) -> Option<String> {
@@ -119,10 +118,8 @@ impl OpenWhiskClient for OpenWhiskCliClient {
         args.push("action".to_string());
         args.push("invoke".to_string());
         args.push(ctx.curr_func.0.clone());
-        args.push("--blocking".to_string());
-        args.push("false".to_string());
-        args.push("--result".to_string());
-        args.push("false".to_string());
+        // Removed blocking/result flags as they take no arguments or cause issues with false
+
 
         let prefix: String = ctx
             .prefix
@@ -146,7 +143,7 @@ impl OpenWhiskClient for OpenWhiskCliClient {
         args.push("timestamp".to_string());
         args.push(ctx.timestamp.to_string());
 
-        let out = self.run_wsk(&args);
+        let out = self.run_wsk(&args).expect("wsk invoke failed");
         let activation_id = Self::parse_activation_id_from_invoke(&out).expect("parse activation id");
 
         let mut st = self.state.lock().unwrap();
@@ -180,9 +177,21 @@ impl OpenWhiskClient for OpenWhiskCliClient {
             args.push("activation".to_string());
             args.push("get".to_string());
             args.push(activation_id.clone());
-            args.push("--json".to_string());
+            // args.push("--json".to_string()); // wsk activation get returns JSON by default or --json is not supported
 
-            let json = self.run_wsk(&args);
+
+            let json = match self.run_wsk(&args) {
+                Ok(s) => s,
+                Err((code, msg)) => {
+                    // 148 is typically "resource does not exist" which means pending for activation get
+                    if code == 148 || msg.contains("does not exist") {
+                        let mut st = self.state.lock().unwrap();
+                        st.queue.push_back(activation_id);
+                        continue;
+                    }
+                    panic!("wsk activation get failed: code={} msg={}", code, msg);
+                }
+            };
             let end_ts = match Self::parse_number_field(&json, "end") {
                 Some(v) => v,
                 None => {
