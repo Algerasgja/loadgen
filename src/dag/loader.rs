@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::dag::repository::DagRepository;
 use crate::interactions::types::{FuncId, WorkflowId};
 
-pub fn load_from_dir(dir: &Path) -> Result<(DagRepository, WorkflowId), String> {
+pub fn load_from_dir(dir: &Path) -> Result<Vec<(DagRepository, WorkflowId)>, String> {
     let mut files: Vec<PathBuf> = Vec::new();
     let entries = fs::read_dir(dir).map_err(|e| format!("read_dir failed: {}", e))?;
     for ent in entries {
@@ -20,37 +20,31 @@ pub fn load_from_dir(dir: &Path) -> Result<(DagRepository, WorkflowId), String> 
         return Err("no .dag files found".to_string());
     }
 
-    let mut start: HashMap<WorkflowId, FuncId> = HashMap::new();
-    let mut edges: HashMap<(WorkflowId, FuncId), Vec<FuncId>> = HashMap::new();
-    let mut probs: HashMap<(WorkflowId, FuncId), Vec<(FuncId, f64)>> = HashMap::new();
-    let mut default_workflow: Option<WorkflowId> = None;
+    let mut results = Vec::new();
 
     for file in files {
         let content =
             fs::read_to_string(&file).map_err(|e| format!("read file {:?}: {}", file, e))?;
         let (wf, wf_start, wf_edges, wf_probs) =
             parse_dag_file(&content).map_err(|e| format!("{:?}: {}", file, e))?;
-        if default_workflow.is_none() {
-            default_workflow = Some(wf.clone());
-        }
-        if start.contains_key(&wf) {
-            return Err(format!("duplicate workflow id {}", wf.0));
-        }
+        
+        let mut start: HashMap<WorkflowId, FuncId> = HashMap::new();
+        let mut edges: HashMap<(WorkflowId, FuncId), Vec<FuncId>> = HashMap::new();
+        
         start.insert(wf.clone(), wf_start);
         for (from, tos) in wf_edges {
             edges.insert((wf.clone(), from), tos);
         }
+        
+        let mut repo = DagRepository::new(start, edges);
         for (from, dist) in wf_probs {
-            probs.insert((wf.clone(), from), dist);
+            repo.set_branch_probs(&wf, &from, dist)?;
         }
+        
+        results.push((repo, wf));
     }
 
-    let mut repo = DagRepository::new(start, edges);
-    for ((wf, from), dist) in probs.into_iter() {
-        repo.set_branch_probs(&wf, &from, dist)?;
-    }
-
-    Ok((repo, default_workflow.expect("default workflow")))
+    Ok(results)
 }
 
 fn parse_dag_file(

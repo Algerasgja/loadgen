@@ -2,10 +2,11 @@ use std::collections::HashMap;
 
 use crate::interactions::capwarm_notifier::CapWarmNotifier;
 use crate::interactions::openwhisk_client::ActivationRecord;
-use crate::interactions::types::{ActivationCompleted, FuncId, RunId};
+use crate::interactions::types::{ActivationCompleted, FuncId, RunId, RunSummary};
 use crate::run::state::{RunState, TerminationReason};
 use crate::util::now_millis;
 
+//管理run的状态
 #[derive(Clone, Debug, Default)]
 pub struct RunManager {
     runs: HashMap<RunId, RunState>,
@@ -31,6 +32,13 @@ impl RunManager {
             .map(|s| s.inflight_activations.len())
             .sum()
     }
+    
+    pub fn active_runs_count(&self) -> usize {
+        self.runs
+            .values()
+            .filter(|s| matches!(s.status, crate::run::state::RunStatus::Running))
+            .count()
+    }
 
     pub fn on_invoked(
         &mut self,
@@ -53,6 +61,7 @@ impl RunManager {
         activation: &ActivationRecord,
         children_len: usize,
         notifier: &dyn CapWarmNotifier,
+        in_flight_counter: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
     ) -> RunStepOutcome {
         let run_id = match self.activation_to_run.remove(&activation.activation_id) {
             Some(v) => v,
@@ -64,7 +73,12 @@ impl RunManager {
         };
 
         let (completed, prev_end_ts) = state
-            .on_completed(&activation.activation_id, activation.end_ts)
+            .on_completed(
+                &activation.activation_id,
+                activation.end_ts,
+                activation.exec_duration,
+                activation.cold_start_duration.is_some(),
+            )
             .unwrap_or_else(|| (activation.func.clone(), 0));
 
         let transition_time = activation.start_ts.saturating_sub(prev_end_ts);
@@ -86,6 +100,24 @@ impl RunManager {
 
         if let Some(reason) = state.should_terminate(children_len) {
             state.mark_finished(reason.clone());
+            
+            // Send RunSummary
+            let summary = RunSummary {
+                workflow_id: state.workflow_id.clone(),
+                run_id: run_id.clone(),
+                request_id: state.request_id.clone(),
+                start_time: state.start_time,
+                end_time: activation.end_ts, // Use last activation end time as run end
+                total_hops: state.hop_index,
+                total_exec_duration: state.total_exec_duration,
+                cold_start_count: state.cold_start_count,
+                termination_reason: format!("{:?}", reason),
+            };
+            notifier.send_run_summary(summary);
+
+            // Decrement in_flight counter when run finishes
+            in_flight_counter.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+
             return RunStepOutcome::Finished { reason };
         }
 

@@ -11,7 +11,7 @@ pub struct NewRunRequest {
 
 #[derive(Clone, Debug)]
 pub struct WorkloadScheduler {
-    pub workflow_id: WorkflowId,
+    pub workflow_ids: Vec<WorkflowId>,
     pub arrival: ArrivalProcess,
     pub max_concurrency: usize,
     pub total_runs: usize,
@@ -25,7 +25,7 @@ pub struct WorkloadScheduler {
 
 impl WorkloadScheduler {
     pub fn new(
-        workflow_id: WorkflowId,
+        workflow_ids: Vec<WorkflowId>,
         arrival: ArrivalProcess,
         max_concurrency: usize,
         total_runs: usize,
@@ -34,7 +34,7 @@ impl WorkloadScheduler {
         now_ms: u64,
     ) -> Self {
         Self {
-            workflow_id,
+            workflow_ids,
             arrival,
             max_concurrency: max_concurrency.max(1),
             total_runs,
@@ -51,6 +51,8 @@ impl WorkloadScheduler {
         self.issued_runs >= self.total_runs
     }
 
+    //尝试按照频率生成模式(arrival:固定模式或者正态分布模式)生成新的run请求
+    //实现了并发数控制
     pub fn try_issue(&mut self, now_ms: u64) -> Option<NewRunRequest> {
         if self.is_done() {
             return None;
@@ -67,8 +69,11 @@ impl WorkloadScheduler {
             return None;
         }
 
+        use rand::seq::SliceRandom;
+        let wf_id = self.workflow_ids.choose(&mut self.rng).expect("no workflows available").clone();
+
         let req = NewRunRequest {
-            workflow_id: self.workflow_id.clone(),
+            workflow_id: wf_id,
             run_id: RunId(format!("run-{}", self.id_counter)),
             request_id: RequestId(format!("req-{}", self.id_counter)),
             start_time: now_ms,
@@ -89,6 +94,9 @@ impl WorkloadScheduler {
         self.next_fire_ms.saturating_sub(now_ms)
     }
 
+    //根据arrival模式采样新的run请求的时间间隔
+    //如果是固定模式，直接返回固定值
+    //如果是正态分布模式，根据正态分布采样值，确保不小于min_interval_ms
     fn sample_interval_ms(&mut self) -> u64 {
         match self.arrival {
             ArrivalProcess::FixedIntervalMs(ms) => ms.max(1),

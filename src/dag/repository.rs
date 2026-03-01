@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::interactions::types::{FuncId, WorkflowId};
 
+//定义DAG仓库，包含函数之间的依赖关系以及DAG之间的跳转概率
 #[derive(Clone, Debug)]
 pub struct DagRepository {
     start: HashMap<WorkflowId, FuncId>,

@@ -38,23 +38,19 @@ impl Default for WorkloadConfig {
 
 #[derive(Clone, Debug)]
 pub struct OpenWhiskConfig {
-    pub wsk_path: String,
+    pub api_host: String,
+    pub auth_key: String,
     pub poll_interval_ms: u64,
     pub poll_batch_size: usize,
-    pub demo_dir: String,
-    pub action_kind: String,
-    pub auto_create_actions: usize,
 }
 
 impl Default for OpenWhiskConfig {
     fn default() -> Self {
         Self {
-            wsk_path: String::new(),
+            api_host: "http://localhost:31001".to_string(), // Default OW API host
+            auth_key: String::new(),
             poll_interval_ms: 50,
             poll_batch_size: 64,
-            demo_dir: "python_demo".to_string(),
-            action_kind: "python:3".to_string(),
-            auto_create_actions: 1,
         }
     }
 }
@@ -119,12 +115,10 @@ fn parse_yaml_minimal(input: &str) -> Result<Config, String> {
                 _ => return Err(format!("line {}: unknown workload key {}", line_no, key)),
             },
             Some("openwhisk") => match key {
-                "wsk_path" => cfg.openwhisk.wsk_path = parse_string(value),
+                "api_host" => cfg.openwhisk.api_host = parse_string(value),
+                "auth_key" => cfg.openwhisk.auth_key = parse_string(value),
                 "poll_interval_ms" => cfg.openwhisk.poll_interval_ms = parse_u64(value, line_no)?,
                 "poll_batch_size" => cfg.openwhisk.poll_batch_size = parse_usize(value, line_no)?,
-                "demo_dir" => cfg.openwhisk.demo_dir = parse_string(value),
-                "action_kind" => cfg.openwhisk.action_kind = parse_string(value),
-                "auto_create_actions" => cfg.openwhisk.auto_create_actions = parse_usize(value, line_no)?,
                 _ => return Err(format!("line {}: unknown openwhisk key {}", line_no, key)),
             },
             Some("cap_warm") => match key {
@@ -141,7 +135,11 @@ fn parse_yaml_minimal(input: &str) -> Result<Config, String> {
 fn split_key_value(s: &str) -> Option<(&str, &str)> {
     let mut it = s.splitn(2, ':');
     let key = it.next()?.trim();
-    let val = it.next()?.trim();
+    let raw_val = it.next()?.trim();
+    
+    // Remove inline comments starting with '#'
+    let val = raw_val.split('#').next().unwrap_or("").trim();
+    
     if key.is_empty() {
         None
     } else {

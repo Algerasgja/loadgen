@@ -1,10 +1,10 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use crate::dag::repository::DagRepository;
 use crate::engine::pet::build_pet_event;
 use crate::interactions::capwarm_notifier::CapWarmNotifier;
 use crate::interactions::openwhisk_client::{ActivationRecord, CompletedActivation, InvocationContext, OpenWhiskClient};
-use crate::interactions::types::{ActivationCompleted, FuncId, RunId, RunStarted};
+use crate::interactions::types::{ActivationCompleted, FuncId, RunId, RunStarted, WorkflowId};
 use crate::policy::branch_prob_table::generate_branch_prob_table;
 use crate::run::manager::{RunManager, RunStepOutcome};
 use crate::run::state::RunState;
@@ -12,11 +12,13 @@ use crate::util::now_millis;
 use crate::workload::scheduler::NewRunRequest;
 
 pub struct DagExecutionEngine<'a> {
-    repo: &'a DagRepository,
+    repos: HashMap<WorkflowId, &'a DagRepository>,
+    branch_probs: HashMap<WorkflowId, HashMap<FuncId, Vec<(FuncId, f64)>>>,
     ow: &'a dyn OpenWhiskClient,
     notifier: &'a dyn CapWarmNotifier,
     pub run_manager: RunManager,
     max_concurrency: usize,
+    in_flight_counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     seed: u64,
     rng: rand::rngs::StdRng,
     pending_starts: VecDeque<NewRunRequest>,
@@ -25,18 +27,31 @@ pub struct DagExecutionEngine<'a> {
 
 impl<'a> DagExecutionEngine<'a> {
     pub fn new(
-        repo: &'a DagRepository,
+        repos_vec: &'a Vec<(DagRepository, WorkflowId)>,
         ow: &'a dyn OpenWhiskClient,
         notifier: &'a dyn CapWarmNotifier,
         max_concurrency: usize,
+        in_flight_counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         seed: u64,
     ) -> Self {
+        let mut repos = HashMap::new();
+        let mut branch_probs = HashMap::new();
+        
+        for (repo, wf_id) in repos_vec {
+            repos.insert(wf_id.clone(), repo);
+            // Pre-generate branch probabilities for each workflow
+            let probs = generate_branch_prob_table(repo, wf_id, seed);
+            branch_probs.insert(wf_id.clone(), probs);
+        }
+
         Self {
-            repo,
+            repos,
+            branch_probs,
             ow,
             notifier,
             run_manager: RunManager::default(),
             max_concurrency: max_concurrency.max(1),
+            in_flight_counter,
             seed,
             rng: rand::SeedableRng::seed_from_u64(seed),
             pending_starts: VecDeque::new(),
@@ -45,13 +60,11 @@ impl<'a> DagExecutionEngine<'a> {
     }
 
     pub fn enqueue_new_run(&mut self, req: NewRunRequest, max_hops: usize) {
-        let branch_probs = generate_branch_prob_table(self.repo, &req.workflow_id, self.seed);
         let state = RunState::new(
             req.workflow_id.clone(),
             RunId(req.run_id.0.clone()),
             req.request_id.clone(),
             max_hops,
-            branch_probs,
             req.start_time,
         );
         self.run_manager.create_run(state);
@@ -98,8 +111,9 @@ impl<'a> DagExecutionEngine<'a> {
         let run_id = RunId(req.run_id.0.clone());
         let workflow_id = req.workflow_id.clone();
         let request_id = req.request_id.clone();
-        let start = self
-            .repo
+        
+        let repo = self.repos.get(&workflow_id).expect("workflow repo not found");
+        let start = repo
             .start_node(&workflow_id)
             .expect("missing start node")
             .clone();
@@ -154,7 +168,8 @@ impl<'a> DagExecutionEngine<'a> {
             timestamp: now_millis(),
         });
 
-        let children = self.repo.children(&completion.ctx.workflow_id, &func);
+        let repo = self.repos.get(&completion.ctx.workflow_id).expect("workflow repo not found");
+        let children = repo.children(&completion.ctx.workflow_id, &func);
         let outcome = self
             .run_manager
             .on_activation_completed(&ActivationRecord {
@@ -164,7 +179,7 @@ impl<'a> DagExecutionEngine<'a> {
                 end_ts,
                 exec_duration,
                 cold_start_duration,
-            }, children.len(), self.notifier);
+            }, children.len(), self.notifier, &self.in_flight_counter);
 
         let (run_id, prefix_after) = match outcome {
             RunStepOutcome::Continue { run_id, prefix, .. } => (run_id, prefix),
@@ -172,13 +187,27 @@ impl<'a> DagExecutionEngine<'a> {
             RunStepOutcome::UnknownRun => return,
         };
 
-        let next = choose_next_from_run_probs(
-            self.run_manager.get(&run_id).unwrap(),
-            &func,
-            &children,
-            &mut self.rng,
-        )
-            .unwrap_or_else(|| children[0].clone());
+        let run_state = self.run_manager.get(&run_id).unwrap();
+        let wf_probs = self.branch_probs.get(&completion.ctx.workflow_id).expect("workflow probs not found");
+        
+        let next = if let Some(dist) = wf_probs.get(&func) {
+            // Use static branch probabilities
+            use rand::Rng;
+            let r: f64 = self.rng.gen();
+            let mut acc = 0.0;
+            let mut selected = None;
+            for (candidate, p) in dist {
+                acc += p;
+                if r <= acc {
+                    selected = Some(candidate.clone());
+                    break;
+                }
+            }
+            selected.unwrap_or_else(|| children[0].clone())
+        } else {
+             // Fallback or deterministic choice
+             children.first().cloned().unwrap_or_else(|| func.clone())
+        };
 
         let workflow_id = completion.ctx.workflow_id.clone();
         let request_id = completion.ctx.request_id.clone();
@@ -195,52 +224,13 @@ impl<'a> DagExecutionEngine<'a> {
 
         let next_ctx = InvocationContext {
             workflow_id,
-            run_id: run_id.clone(),
+            run_id,
             request_id,
-            prefix: prefix_after,
-            curr_func: next,
+            prefix: prefix_after.clone(),
+            curr_func: next.clone(),
             timestamp: now_millis(),
         };
 
-        if self.run_manager.inflight_count() < self.max_concurrency {
-            let handle = self.ow.invoke_nonblocking(next_ctx.clone());
-            let _ = self.run_manager.on_invoked(
-                &run_id,
-                handle.activation_id,
-                next_ctx.curr_func.clone(),
-                next_ctx.timestamp,
-            );
-            if let Some(s) = self.run_manager.get_mut(&run_id) {
-                s.set_current(next_ctx.curr_func);
-            }
-        } else {
-            self.pending_invokes.push_back((run_id, next_ctx));
-        }
+        self.pending_invokes.push_back((next_ctx.run_id.clone(), next_ctx));
     }
-}
-
-fn choose_next_from_run_probs(
-    state: &RunState,
-    from: &FuncId,
-    children: &[FuncId],
-    rng: &mut rand::rngs::StdRng,
-) -> Option<FuncId> {
-    if children.is_empty() {
-        return None;
-    }
-    if children.len() == 1 {
-        return Some(children[0].clone());
-    }
-    let dist = state.branch_probabilities.get(from)?;
-    let r: f64 = rand::Rng::gen(rng);
-    let mut acc = 0.0;
-    for (to, p) in dist {
-        acc += *p;
-        if r < acc {
-            if children.contains(to) {
-                return Some(to.clone());
-            }
-        }
-    }
-    dist.last().map(|(to, _)| to.clone())
 }

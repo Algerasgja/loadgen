@@ -54,12 +54,12 @@ fn sim_one_second_requests_single_engine_multi_run_branch_and_termination() {
         ArrivalProcess::FixedIntervalMs(mean_interval_ms as u64),
         usize::MAX,
         total_runs_limit,
-        in_flight,
+        in_flight.clone(),
         1,
         0,
     );
 
-    let mut engine = DagExecutionEngine::new(&repo, &ow, &notifier, max_concurrency, 7);
+    let mut engine = DagExecutionEngine::new(&repo, &ow, &notifier, max_concurrency, in_flight.clone(), 7);
 
     let start_ms = 0_u64;
     let end_ms = start_ms + 1000;

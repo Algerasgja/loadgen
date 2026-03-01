@@ -1,0 +1,15 @@
+target
+.git
+**/*.log
+**/*.csv
+**/*.jsonl
+**/*.parquet
+**/*.zip
+**/*.tar
+**/*.gz
+k8s*
+docs*
+data*
+*.pdf
+*.png
+*.jpg

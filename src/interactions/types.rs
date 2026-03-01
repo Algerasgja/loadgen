@@ -50,3 +50,16 @@ pub struct ActivationCompleted {
     pub timestamp: Timestamp,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RunSummary {
+    pub workflow_id: WorkflowId,
+    pub run_id: RunId,
+    pub request_id: RequestId,
+    pub start_time: Timestamp,
+    pub end_time: Timestamp,
+    pub total_hops: usize,
+    pub total_exec_duration: Duration,
+    pub cold_start_count: usize,
+    pub termination_reason: String,
+}
+

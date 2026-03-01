@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loadgen-job
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loadgen
+        image: 192.168.31.96:5000/loadgen:0.1
+        imagePullPolicy: Always
+        env:
+        - name: RUST_LOG
+          value: "info"
+        - name: LOADGEN_CONFIG
+          value: "/app/loadgen.yaml"
+
+        # CAP-Warm service in default namespace
+        - name: CAPWARM_URL
+          value: "http://cap-warm-service.default.svc.cluster.local:80"
+
+        # OpenWhisk controller service (adjust if your svc name/port differ)
+        - name: OW_API_HOST
+          value: "http://owdev-controller.openwhisk.svc.cluster.local:8080"
+
+        - name: OW_AUTH_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openwhisk-secret
+              key: api-key

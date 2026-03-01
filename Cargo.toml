@@ -13,3 +13,8 @@ url = "=2.4.1"
 idna = "=0.4.0"
 indexmap = "=2.2.6"
 native-tls = "=0.2.11"
+base64 = "0.21"
+crossbeam-channel = "0.5"
+uuid = { version = "1.0", features = ["v4"] }
+log = "0.4"
+env_logger = "0.10"

@@ -49,7 +49,8 @@ fn runs_linear_dag_and_emits_events() {
     ]);
 
     let notifier = RecordingNotifier::default();
-    let mut engine = DagExecutionEngine::new(&repo, &ow, &notifier, 8, 1);
+    let inflight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut engine = DagExecutionEngine::new(&repo, &ow, &notifier, 8, inflight, 1);
     engine.enqueue_new_run(
         loadgen::workload::scheduler::NewRunRequest {
             workflow_id: w.clone(),

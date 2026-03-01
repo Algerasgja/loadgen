@@ -11,10 +11,12 @@ pub struct RunState {
     pub max_hops: usize,
     pub prefix: Vec<FuncId>,
     pub current_func: Option<FuncId>,
-    pub branch_probabilities: HashMap<FuncId, Vec<(FuncId, f64)>>,
     pub inflight_activations: HashMap<String, InflightActivation>,
     pub status: RunStatus,
     pub last_end_ts: u64,
+    pub start_time: u64,
+    pub total_exec_duration: u64,
+    pub cold_start_count: usize,
 }
 
 impl RunState {
@@ -23,7 +25,6 @@ impl RunState {
         run_id: RunId,
         request_id: RequestId,
         max_hops: usize,
-        branch_probabilities: HashMap<FuncId, Vec<(FuncId, f64)>>,
         start_time: u64,
     ) -> Self {
         Self {
@@ -34,10 +35,12 @@ impl RunState {
             max_hops: max_hops.max(1),
             prefix: Vec::new(),
             current_func: None,
-            branch_probabilities,
             inflight_activations: HashMap::new(),
             status: RunStatus::Running,
             last_end_ts: start_time,
+            start_time,
+            total_exec_duration: 0,
+            cold_start_count: 0,
         }
     }
 
@@ -55,12 +58,17 @@ impl RunState {
         );
     }
 
-    pub fn on_completed(&mut self, activation_id: &str, current_end_ts: u64) -> Option<(FuncId, u64)> {
+    pub fn on_completed(&mut self, activation_id: &str, current_end_ts: u64, exec_duration: u64, is_cold: bool) -> Option<(FuncId, u64)> {
         let inflight = self.inflight_activations.remove(activation_id)?;
         let func = inflight.func;
         
         let prev_end_ts = self.last_end_ts;
         self.last_end_ts = current_end_ts;
+        
+        self.total_exec_duration += exec_duration;
+        if is_cold {
+            self.cold_start_count += 1;
+        }
 
         self.prefix.push(func.clone());
         self.hop_index = self.hop_index.saturating_add(1);
