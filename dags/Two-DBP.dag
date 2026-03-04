@@ -1,0 +1,24 @@
+workflow wf_s2
+start Function1
+
+edge Function1 -> Function2
+
+# DBP1
+edge Function2 -> Function3,Function4
+prob Function2 Function3=0.5 Function4=0.5
+
+# Merge to Function5
+edge Function3 -> Function5
+edge Function4 -> Function5
+
+edge Function5 -> Function6
+
+# DBP2
+edge Function6 -> Function7,Function8
+prob Function6 Function7=0.5 Function8=0.5
+
+# Merge to Function9 then End
+edge Function7 -> Function9
+edge Function8 -> Function9
+
+edge Function9 -> Function10

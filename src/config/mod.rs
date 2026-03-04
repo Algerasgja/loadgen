@@ -1,6 +1,7 @@
 #[derive(Clone, Debug)]
 pub struct Config {
     pub dag_dir: String,
+    pub dag_file: String, // New: Specific DAG file to load
     pub workload: WorkloadConfig,
     pub openwhisk: OpenWhiskConfig,
     pub cap_warm: CapWarmConfig,
@@ -10,6 +11,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             dag_dir: "dags".to_string(),
+            dag_file: "DAG-real.dag".to_string(), // Default DAG file
             workload: WorkloadConfig::default(),
             openwhisk: OpenWhiskConfig::default(),
             cap_warm: CapWarmConfig::default(),
@@ -19,19 +21,27 @@ impl Default for Config {
 
 #[derive(Clone, Debug)]
 pub struct WorkloadConfig {
-    pub target_rps: f64,
-    pub total_runs: usize,
-    pub max_concurrency: usize,
-    pub stddev_ratio: f64,
+    pub duration_seconds: u64,
+    pub drift_mode: DriftMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DriftMode {
+    Stable,
+    Drift,
+}
+
+impl Default for DriftMode {
+    fn default() -> Self {
+        DriftMode::Stable
+    }
 }
 
 impl Default for WorkloadConfig {
     fn default() -> Self {
         Self {
-            target_rps: 5.0,
-            total_runs: 3,
-            max_concurrency: 2,
-            stddev_ratio: 0.1,
+            duration_seconds: 60,
+            drift_mode: DriftMode::default(),
         }
     }
 }
@@ -105,13 +115,16 @@ fn parse_yaml_minimal(input: &str) -> Result<Config, String> {
         match section {
             None => match key {
                 "dag_dir" => cfg.dag_dir = parse_string(value),
+                "dag_file" => cfg.dag_file = parse_string(value),
                 _ => return Err(format!("line {}: unknown key {}", line_no, key)),
             },
             Some("workload") => match key {
-                "target_rps" => cfg.workload.target_rps = parse_f64(value, line_no)?,
-                "total_runs" => cfg.workload.total_runs = parse_usize(value, line_no)?,
-                "max_concurrency" => cfg.workload.max_concurrency = parse_usize(value, line_no)?,
-                "stddev_ratio" => cfg.workload.stddev_ratio = parse_f64(value, line_no)?,
+                "duration_seconds" => cfg.workload.duration_seconds = parse_u64(value, line_no)?,
+                "drift_mode" => cfg.workload.drift_mode = parse_drift_mode(value, line_no)?,
+                // Ignore old keys or error if strict
+                "target_rps" | "total_runs" | "max_concurrency" | "stddev_ratio" => {
+                    // Just ignore or log warning? For now ignore.
+                },
                 _ => return Err(format!("line {}: unknown workload key {}", line_no, key)),
             },
             Some("openwhisk") => match key {
@@ -169,4 +182,20 @@ fn parse_usize(s: &str, line_no: usize) -> Result<usize, String> {
 fn parse_f64(s: &str, line_no: usize) -> Result<f64, String> {
     s.parse::<f64>()
         .map_err(|_| format!("line {}: bad f64", line_no))
+}
+
+fn parse_drift_mode(s: &str, line_no: usize) -> Result<DriftMode, String> {
+    // Handle potential quotes and trimming
+    let s = s.trim();
+    let val = if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+
+    match val.to_lowercase().as_str() {
+        "stable" => Ok(DriftMode::Stable),
+        "drift" => Ok(DriftMode::Drift),
+        _ => Err(format!("line {}: bad drift_mode (expected 'stable' or 'drift'), got '{}'", line_no, val)),
+    }
 }

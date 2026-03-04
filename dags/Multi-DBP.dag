@@ -1,0 +1,25 @@
+workflow wf_s3
+start Function1
+
+edge Function1 -> Function2
+
+# DBP1
+edge Function2 -> Function3,Function4
+prob Function2 Function3=0.5 Function4=0.5
+
+# Merge1
+edge Function3 -> Function5
+edge Function4 -> Function5
+
+edge Function5 -> Function6
+
+# DBP2
+edge Function6 -> Function7,Function8
+prob Function6 Function7=0.5 Function8=0.5
+
+# Merge2 to Function8 (make Function8 a join/processing node)
+edge Function7 -> Function8
+
+# DBP3 (final split)
+edge Function8 -> Function9,Function10
+prob Function8 Function9=0.5 Function10=0.5

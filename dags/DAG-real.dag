@@ -1,0 +1,18 @@
+workflow wf_real
+start Function1
+
+# NGINX fan-out
+edge Function1 -> Function2,Function3,Function4,Function5
+prob Function1 Function2=0.08 Function3=0.40 Function4=0.32 Function5=0.20
+
+# Make_Post fan-out
+edge Function3 -> Function6,Function7,Function8,Function9
+prob Function3 Function6=0.50 Function7=0.30 Function8=0.10 Function9=0.10
+
+# Content steps converge to Compose_Post
+edge Function6 -> Function9
+edge Function7 -> Function9
+edge Function8 -> Function9
+
+# Compose_Post -> Post_Storage
+edge Function9 -> Function10

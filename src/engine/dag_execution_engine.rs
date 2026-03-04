@@ -1,19 +1,23 @@
 use std::collections::{HashMap, VecDeque};
 
+use crate::config::DriftMode;
 use crate::dag::repository::DagRepository;
 use crate::engine::pet::build_pet_event;
 use crate::interactions::capwarm_notifier::CapWarmNotifier;
 use crate::interactions::openwhisk_client::{ActivationRecord, CompletedActivation, InvocationContext, OpenWhiskClient};
 use crate::interactions::types::{ActivationCompleted, FuncId, RunId, RunStarted, WorkflowId};
 use crate::policy::branch_prob_table::generate_branch_prob_table;
+use crate::policy::context_aware::{generate_context_aware_table, ContextProbTable, Period};
 use crate::run::manager::{RunManager, RunStepOutcome};
 use crate::run::state::RunState;
 use crate::util::now_millis;
 use crate::workload::scheduler::NewRunRequest;
+use serde_json::json;
 
 pub struct DagExecutionEngine<'a> {
     repos: HashMap<WorkflowId, &'a DagRepository>,
     branch_probs: HashMap<WorkflowId, HashMap<FuncId, Vec<(FuncId, f64)>>>,
+    context_probs: HashMap<WorkflowId, ContextProbTable>,
     ow: &'a dyn OpenWhiskClient,
     notifier: &'a dyn CapWarmNotifier,
     pub run_manager: RunManager,
@@ -23,6 +27,12 @@ pub struct DagExecutionEngine<'a> {
     rng: rand::rngs::StdRng,
     pending_starts: VecDeque<NewRunRequest>,
     pending_invokes: VecDeque<(RunId, InvocationContext)>,
+    
+    // Context-aware & Drift state
+    current_period: Period,
+    drift_mode: DriftMode,
+    duration_seconds: u64,
+    start_time_ms: u64,
 }
 
 impl<'a> DagExecutionEngine<'a> {
@@ -33,20 +43,29 @@ impl<'a> DagExecutionEngine<'a> {
         max_concurrency: usize,
         in_flight_counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         seed: u64,
+        duration_seconds: u64,
+        drift_mode: DriftMode,
+        start_time_ms: u64,
     ) -> Self {
         let mut repos = HashMap::new();
         let mut branch_probs = HashMap::new();
+        let mut context_probs = HashMap::new();
         
         for (repo, wf_id) in repos_vec {
             repos.insert(wf_id.clone(), repo);
             // Pre-generate branch probabilities for each workflow
             let probs = generate_branch_prob_table(repo, wf_id, seed);
             branch_probs.insert(wf_id.clone(), probs);
+            
+            // Pre-generate context-aware probabilities
+            let ctx_probs = generate_context_aware_table(repo, wf_id, seed);
+            context_probs.insert(wf_id.clone(), ctx_probs);
         }
 
         Self {
             repos,
             branch_probs,
+            context_probs,
             ow,
             notifier,
             run_manager: RunManager::default(),
@@ -56,6 +75,10 @@ impl<'a> DagExecutionEngine<'a> {
             rng: rand::SeedableRng::seed_from_u64(seed),
             pending_starts: VecDeque::new(),
             pending_invokes: VecDeque::new(),
+            current_period: Period::Morning,
+            drift_mode,
+            duration_seconds,
+            start_time_ms,
         }
     }
 
@@ -83,8 +106,11 @@ impl<'a> DagExecutionEngine<'a> {
             self.handle_completion(c);
         }
 
-        while self.run_manager.inflight_count() < self.max_concurrency {
+        // Remove concurrency limit check
+        // while self.run_manager.inflight_count() < self.max_concurrency {
+        loop {
             if let Some((run_id, ctx)) = self.pending_invokes.pop_front() {
+                log::info!("Invoking function {} for run {}", ctx.curr_func.0, run_id.0);
                 let handle = self.ow.invoke_nonblocking(ctx.clone());
                 let _ = self.run_manager.on_invoked(
                     &run_id,
@@ -99,6 +125,7 @@ impl<'a> DagExecutionEngine<'a> {
             }
 
             if let Some(req) = self.pending_starts.pop_front() {
+                log::info!("Starting run {} (workflow {})", req.run_id.0, req.workflow_id.0);
                 self.start_run(req);
                 continue;
             }
@@ -129,6 +156,9 @@ impl<'a> DagExecutionEngine<'a> {
             timestamp: now_millis(),
         });
 
+        // Get function memory
+        let memory = repo.get_memory(&workflow_id, &start).unwrap_or(50);
+
         let ctx = InvocationContext {
             workflow_id,
             run_id: run_id.clone(),
@@ -136,6 +166,10 @@ impl<'a> DagExecutionEngine<'a> {
             prefix: Vec::new(),
             curr_func: start,
             timestamp: now_millis(),
+            params: Some(json!({
+                "memory": memory,
+                "warmup": false
+            })),
         };
         let handle = self.ow.invoke_nonblocking(ctx.clone());
         let _ = self
@@ -153,20 +187,7 @@ impl<'a> DagExecutionEngine<'a> {
             cold_start_duration,
         } = completion.record;
 
-        self.notifier.send_activation_completed(ActivationCompleted {
-            workflow_id: completion.ctx.workflow_id.clone(),
-            run_id: completion.ctx.run_id.clone(),
-            request_id: completion.ctx.request_id.clone(),
-            prefix: completion.ctx.prefix.clone(),
-            func: func.clone(),
-            activation_id: activation_id.clone(),
-            start_ts,
-            end_ts,
-            exec_duration,
-            cold_start_duration,
-            transition_time: 0, // Not available here, sent by RunManager
-            timestamp: now_millis(),
-        });
+        // Duplicate send_activation_completed removed here (handled by RunManager)
 
         let repo = self.repos.get(&completion.ctx.workflow_id).expect("workflow repo not found");
         let children = repo.children(&completion.ctx.workflow_id, &func);
@@ -183,14 +204,45 @@ impl<'a> DagExecutionEngine<'a> {
 
         let (run_id, prefix_after) = match outcome {
             RunStepOutcome::Continue { run_id, prefix, .. } => (run_id, prefix),
-            RunStepOutcome::Finished { .. } => return,
+            RunStepOutcome::Finished { .. } => {
+                // Check Drift based on time
+                if self.drift_mode == DriftMode::Drift {
+                    let now = now_millis();
+                    let elapsed = now.saturating_sub(self.start_time_ms);
+                    if elapsed >= (self.duration_seconds * 1000 / 2) {
+                        if self.current_period != Period::Evening {
+                            // Switch period
+                            self.current_period = Period::Evening;
+                            log::info!("Concept Drift: Switching to Evening period after {} ms (Halfway of {}s)", 
+                                elapsed, self.duration_seconds);
+                        }
+                    }
+                }
+                return;
+            }
             RunStepOutcome::UnknownRun => return,
         };
 
-        let run_state = self.run_manager.get(&run_id).unwrap();
-        let wf_probs = self.branch_probs.get(&completion.ctx.workflow_id).expect("workflow probs not found");
+        // Context-aware Branch Selection
+        let wf_ctx_probs = self.context_probs.get(&completion.ctx.workflow_id).expect("workflow ctx probs not found");
+        let wf_branch_probs = self.branch_probs.get(&completion.ctx.workflow_id).expect("workflow branch probs not found");
         
-        let next = if let Some(dist) = wf_probs.get(&func) {
+        // Try context-aware first
+        let ctx_key = (prefix_after.clone(), self.current_period, func.clone());
+        let next = if let Some(dist) = wf_ctx_probs.get(&ctx_key) {
+             use rand::Rng;
+            let r: f64 = self.rng.gen();
+            let mut acc = 0.0;
+            let mut selected = None;
+            for (candidate, p) in dist {
+                acc += p;
+                if r <= acc {
+                    selected = Some(candidate.clone());
+                    break;
+                }
+            }
+            selected.unwrap_or_else(|| children[0].clone())
+        } else if let Some(dist) = wf_branch_probs.get(&func) {
             // Use static branch probabilities
             use rand::Rng;
             let r: f64 = self.rng.gen();
@@ -222,6 +274,8 @@ impl<'a> DagExecutionEngine<'a> {
             now_millis(),
         ));
 
+        let next_mem = repo.get_memory(&workflow_id, &next).unwrap_or(50);
+
         let next_ctx = InvocationContext {
             workflow_id,
             run_id,
@@ -229,6 +283,10 @@ impl<'a> DagExecutionEngine<'a> {
             prefix: prefix_after.clone(),
             curr_func: next.clone(),
             timestamp: now_millis(),
+            params: Some(json!({
+                "memory": next_mem,
+                "warmup": false
+            })),
         };
 
         self.pending_invokes.push_back((next_ctx.run_id.clone(), next_ctx));

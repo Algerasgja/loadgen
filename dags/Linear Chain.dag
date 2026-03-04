@@ -1,0 +1,8 @@
+workflow wf_s1
+start Function1
+
+edge Function1 -> Function2
+edge Function2 -> Function3
+edge Function3 -> Function4
+edge Function4 -> Function5
+edge Function5 -> Function6

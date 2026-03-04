@@ -1,10 +1,9 @@
 dag_dir: "dags"
+dag_file: "DAG-real.dag" # Specify which DAG to use (e.g. DAG-real.dag, DAG-cycle.dag)
 
 workload:
-  target_rps: 5.0
-  total_runs: 10
-  max_concurrency: 2
-  stddev_ratio: 0.1
+  duration_seconds: 60
+  drift_mode: "stable" # "stable" or "drift"
 
 openwhisk:
   api_host: "http://owdev-nginx.openwhisk.svc.cluster.local:80" # Your OW API host

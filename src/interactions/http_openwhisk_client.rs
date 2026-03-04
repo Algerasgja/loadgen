@@ -80,13 +80,22 @@ impl OpenWhiskClient for HttpOpenWhiskClient {
             .collect::<Vec<_>>()
             .join(",");
 
-        let body = serde_json::json!({
-            "workflow_id": ctx.workflow_id.0,
-            "run_id": ctx.run_id.0,
-            "request_id": ctx.request_id.0,
-            "prefix": prefix,
-            "timestamp": ctx.timestamp
-        });
+        let mut body_map = serde_json::Map::new();
+        body_map.insert("workflow_id".to_string(), serde_json::json!(ctx.workflow_id.0));
+        body_map.insert("run_id".to_string(), serde_json::json!(ctx.run_id.0));
+        body_map.insert("request_id".to_string(), serde_json::json!(ctx.request_id.0));
+        body_map.insert("prefix".to_string(), serde_json::json!(prefix));
+        body_map.insert("timestamp".to_string(), serde_json::json!(ctx.timestamp));
+
+        if let Some(params) = &ctx.params {
+            if let Some(obj) = params.as_object() {
+                for (k, v) in obj {
+                    body_map.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        let body = Value::Object(body_map);
 
         let resp = self
             .client
