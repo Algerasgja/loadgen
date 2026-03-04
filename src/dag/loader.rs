@@ -9,10 +9,25 @@ use crate::interactions::types::{FuncId, WorkflowId};
 
 fn get_python_value(arg: &str, seed: f64) -> Result<f64, String> {
     // Path relative to binary or current working directory
-    // In container, workdir is /app. script is real-world-emulation/RealWorldAppEmulation.py
+    // Local execution: real-world-emulation/RealWorldAppEmulation.py
     let script_path = "real-world-emulation/RealWorldAppEmulation.py";
     if !Path::new(script_path).exists() {
-        return Err(format!("Python script not found at {}", script_path));
+        // Fallback for container path if local fails (optional, but requested to fix for local)
+        let container_path = "real-world/real-world-emulation/RealWorldAppEmulation.py";
+        if Path::new(container_path).exists() {
+             let output = Command::new("python3")
+                .arg(container_path)
+                .arg(arg)
+                .arg(seed.to_string())
+                .output()
+                .map_err(|e| format!("python execution failed: {}", e))?;
+             if !output.status.success() {
+                return Err(format!("python script error: {}", String::from_utf8_lossy(&output.stderr)));
+             }
+             let stdout = String::from_utf8_lossy(&output.stdout);
+             return stdout.trim().parse::<f64>().map_err(|e| format!("parse python output failed: {} ({})", e, stdout));
+        }
+        return Err(format!("Python script not found at {} or {}", script_path, container_path));
     }
 
     let output = Command::new("python3")

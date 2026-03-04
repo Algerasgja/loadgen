@@ -6,10 +6,13 @@ workload:
   drift_mode: "stable" # "stable" or "drift"
 
 openwhisk:
-  api_host: "http://owdev-nginx.openwhisk.svc.cluster.local:80" # Your OW API host
-  auth_key: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP" # Your OW auth key
+  # api_host: "http://owdev-nginx.openwhisk.svc.cluster.local:80" # Your OW API host
+  # auth_key: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP" # Your OW auth key
+  api_host: "http://localhost:30516" # Localhost NodePort for OW controller
+  auth_key: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
   poll_interval_ms: 50
   poll_batch_size: 64
 
 cap_warm:
-  url: "http://cap-warm-service.default.svc.cluster.local:80"
+  # url: "http://cap-warm-service.default.svc.cluster.local:80"
+  url: "http://localhost:8080"
